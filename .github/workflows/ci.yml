@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies (root)
+        run: npm ci
+
+      - name: Run Vitest unit tests
+        run: npm test
+
+      - name: Build root library (tsup)
+        run: npm run build
+
+      - name: Install playground dependencies
+        run: npm --prefix examples/playground ci
+
+      - name: Build playground (vite)
+        run: npm --prefix examples/playground run build
