@@ -18,13 +18,17 @@ export interface UseAttachmentOCRReturn {
   attachments: AttachmentOCRItem[];
   isProcessing: boolean;
   processFiles: (files: FileList | File[]) => Promise<OCRResult[]>;
+  handlePaste: (event: {
+    clipboardData?: DataTransfer | null;
+    preventDefault?: () => void;
+  }) => Promise<OCRResult[]>;
   removeAttachment: (id: string) => void;
   clearAttachments: () => void;
   getPromptContext: () => string;
 }
 
 /**
- * React hook for managing zero-egress chat attachment OCR processing with live progress states.
+ * React hook for managing zero-egress chat attachment OCR processing with live progress states and paste interception.
  */
 export function useAttachmentOCR(options?: OCROptions): UseAttachmentOCRReturn {
   const [attachments, setAttachments] = useState<AttachmentOCRItem[]>([]);
@@ -128,10 +132,51 @@ export function useAttachmentOCR(options?: OCROptions): UseAttachmentOCRReturn {
     [options]
   );
 
+  const handlePaste = useCallback(
+    async (event: {
+      clipboardData?: DataTransfer | null;
+      preventDefault?: () => void;
+    }): Promise<OCRResult[]> => {
+      const items = event.clipboardData?.items;
+      const files = event.clipboardData?.files;
+      const imageFiles: File[] = [];
+
+      if (items && items.length > 0) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (file) {
+              imageFiles.push(
+                new File([file], file.name || `clipboard-${Date.now()}.png`, { type: file.type })
+              );
+            }
+          }
+        }
+      } else if (files && files.length > 0) {
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          if (file.type.startsWith('image/')) {
+            imageFiles.push(file);
+          }
+        }
+      }
+
+      if (imageFiles.length > 0) {
+        event.preventDefault?.();
+        return processFiles(imageFiles);
+      }
+
+      return [];
+    },
+    [processFiles]
+  );
+
   return {
     attachments,
     isProcessing,
     processFiles,
+    handlePaste,
     removeAttachment,
     clearAttachments,
     getPromptContext,

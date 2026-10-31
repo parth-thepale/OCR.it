@@ -30,6 +30,16 @@ export const extractAttachmentTextParamsSchema = z.object({
     .optional()
     .default(30)
     .describe('Minimum word confidence threshold (0-100)'),
+  redactPII: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe('Scrub sensitive API keys, emails, cards, and phone numbers before returning'),
+  autoInvertDarkMode: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe('Automatically invert colors for dark-mode IDE/terminal screenshots'),
 });
 
 export type ExtractAttachmentTextParams = z.infer<typeof extractAttachmentTextParamsSchema>;
@@ -53,6 +63,8 @@ export interface OCRToolExecutionResult {
   confidence: number;
   latencyMs: number;
   estimatedVisionTokensSaved: number;
+  routingRecommendation: 'use_local_markdown' | 'fallback_to_vision_llm';
+  redactionsApplied: number;
   promptXml: string;
 }
 
@@ -86,6 +98,18 @@ export function createOCRTool(options: CreateOCRToolOptions) {
         maximum: 100,
         default: 30,
       },
+      redactPII: {
+        type: 'boolean',
+        description:
+          'Scrub sensitive API keys, emails, cards, and phone numbers before returning',
+        default: true,
+      },
+      autoInvertDarkMode: {
+        type: 'boolean',
+        description:
+          'Automatically invert colors for dark-mode IDE/terminal screenshots',
+        default: true,
+      },
     },
     required: ['attachmentId'],
     additionalProperties: false,
@@ -114,6 +138,8 @@ export function createOCRTool(options: CreateOCRToolOptions) {
         language: parsedArgs.language,
         preserveTables: parsedArgs.preserveTables,
         confidenceThreshold: parsedArgs.confidenceThreshold,
+        redactPII: parsedArgs.redactPII,
+        autoInvertDarkMode: parsedArgs.autoInvertDarkMode,
       };
 
       const result = await extractAttachmentOCR(input, ocrOptions);
@@ -125,6 +151,8 @@ export function createOCRTool(options: CreateOCRToolOptions) {
         confidence: result.confidence,
         latencyMs: result.latencyMs,
         estimatedVisionTokensSaved: result.estimatedVisionTokensSaved,
+        routingRecommendation: result.routingRecommendation,
+        redactionsApplied: result.redactionsApplied,
         promptXml: formatForPrompt(result),
       };
     },

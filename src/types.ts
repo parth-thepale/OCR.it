@@ -25,12 +25,25 @@ export interface OCRResult {
   latencyMs: number;
   estimatedVisionTokensSaved: number;
   attachmentName: string;
+  routingRecommendation: 'use_local_markdown' | 'fallback_to_vision_llm';
+  redactionsApplied: number;
+}
+
+export interface PIIOptions {
+  redactEmails?: boolean;
+  redactPhones?: boolean;
+  redactSecrets?: boolean;
+  redactCards?: boolean;
 }
 
 export interface OCROptions {
   language?: string;
   preserveTables?: boolean;
   confidenceThreshold?: number;
+  autoInvertDarkMode?: boolean;
+  contrastBoost?: boolean;
+  redactPII?: boolean;
+  piiOptions?: PIIOptions;
   onProgress?: (progress: number, status: string) => void;
 }
 

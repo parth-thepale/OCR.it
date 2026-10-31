@@ -2,7 +2,9 @@ import { createWorker } from 'tesseract.js';
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import { OCRLine, OCRWord, OCRResult, OCROptions, OCRInput } from './types';
 import { reconstructMarkdown } from './layout-to-md';
-import { calculateTokenMetrics } from './token-metrics';
+import { calculateTokenMetrics, determineRoutingRecommendation } from './token-metrics';
+import { preprocessImage } from './preprocess';
+import { redactSensitiveData } from './pii-redactor';
 
 export type { OCRInput };
 
@@ -156,18 +158,39 @@ export class LocalOCRClient {
       ...options,
     };
 
+    // 1. Preprocess image (auto-inversion for dark-mode screenshots, contrast boost)
+    let processedInput = input;
+    if (effectiveOptions.autoInvertDarkMode !== false || effectiveOptions.contrastBoost) {
+      processedInput = await preprocessImage(input, {
+        autoInvertDarkMode: effectiveOptions.autoInvertDarkMode,
+        contrastBoost: effectiveOptions.contrastBoost,
+      });
+    }
+
     const language = effectiveOptions.language || this.currentLanguage || 'eng';
     const worker = await this.getWorker(language, effectiveOptions.onProgress);
 
     // Critical: { blocks: true } in Tesseract.js v7 populates hierarchical block and bbox data
     const response = await worker.recognize(
-      input as any,
+      processedInput as any,
       {},
       { text: true, blocks: true } as any
     );
 
     const lines = extractLinesFromPage(response?.data);
-    const markdown = reconstructMarkdown(lines, effectiveOptions);
+    let markdown = reconstructMarkdown(lines, effectiveOptions);
+    let rawText = response?.data?.text || '';
+
+    // 2. Client-side PII and Secret Redaction
+    let redactionsApplied = 0;
+    if (effectiveOptions.redactPII !== false) {
+      const piiMarkdown = redactSensitiveData(markdown, effectiveOptions.piiOptions);
+      markdown = piiMarkdown.sanitizedText;
+      const piiRaw = redactSensitiveData(rawText, effectiveOptions.piiOptions);
+      rawText = piiRaw.sanitizedText;
+      redactionsApplied = piiMarkdown.redactionCount;
+    }
+
     const metrics = calculateTokenMetrics(markdown);
 
     let attachmentName = 'attachment';
@@ -188,14 +211,20 @@ export class LocalOCRClient {
         ? Math.round(response.data.confidence * 10) / 10
         : 100;
 
+    // 3. Smart Vision Router Heuristic
+    const totalWords = lines.reduce((acc, l) => acc + (l.words?.length || 0), 0);
+    const routingRecommendation = determineRoutingRecommendation(confidence, totalWords);
+
     return {
-      rawText: response?.data?.text || '',
+      rawText,
       markdown,
       lines,
       confidence,
       latencyMs,
       estimatedVisionTokensSaved: metrics.estimatedVisionTokensSaved,
       attachmentName,
+      routingRecommendation,
+      redactionsApplied,
     };
   }
 

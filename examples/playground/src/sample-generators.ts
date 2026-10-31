@@ -95,19 +95,19 @@ export function generateReceiptFile(): Promise<File> {
 export function generateTerminalFile(): Promise<File> {
   return new Promise((resolve, reject) => {
     const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 340;
+    canvas.width = 680;
+    canvas.height = 380;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       return reject(new Error('Canvas 2D context not available'));
     }
 
     // Terminal dark background
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Title bar
-    ctx.fillStyle = '#1e293b';
+    ctx.fillStyle = '#172033';
     ctx.fillRect(0, 0, canvas.width, 36);
 
     // macOS window controls
@@ -128,31 +128,40 @@ export function generateTerminalFile(): Promise<File> {
 
     ctx.fillStyle = '#94a3b8';
     ctx.font = '12px monospace';
-    ctx.fillText('bash - session-terminal - 80x24', 210, 22);
+    ctx.fillText('zsh - session-worker - 80x24', 230, 22);
 
     // Terminal error output
     ctx.fillStyle = '#f87171';
     ctx.font = 'bold 15px monospace';
-    ctx.fillText('CRITICAL ERROR: ConnectionRefusedError [Errno 111]', 20, 60);
+    ctx.fillText('CRITICAL ERROR: ConnectionRefusedError [Errno 111]', 20, 58);
 
-    ctx.fillStyle = '#e2e8f0';
-    ctx.font = '14px monospace';
-    ctx.fillText('Target endpoint: 127.0.0.1:8080 (PostgreSQL Replica)', 20, 95);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '13px monospace';
+    ctx.fillText('Target endpoint: 127.0.0.1:8080 (PostgreSQL Replica)', 20, 88);
+
+    // Simulated sensitive credentials for testing PII Scrubber
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '13px monospace';
+    ctx.fillText('Deployer User: dev-ops@internal.acme.corp', 20, 118);
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = '13px monospace';
+    ctx.fillText('Session Key: sk-proj-98a7bc1234567890abcdef123456', 20, 148);
 
     ctx.fillStyle = '#94a3b8';
-    ctx.font = '13px monospace';
-    ctx.fillText('Stack Trace:', 20, 130);
-    ctx.fillText('  at DatabasePool.acquireConnection (src/db/pool.ts:42:15)', 20, 155);
-    ctx.fillText('  at async TransactionManager.begin (src/tx/manager.ts:88:9)', 20, 180);
-    ctx.fillText('  at async handleCheckoutRequest (src/routes/pay.ts:112:5)', 20, 205);
+    ctx.font = '12px monospace';
+    ctx.fillText('Stack Trace:', 20, 185);
+    ctx.fillText('  at DatabasePool.acquireConnection (src/db/pool.ts:42:15)', 20, 210);
+    ctx.fillText('  at async TransactionManager.begin (src/tx/manager.ts:88:9)', 20, 235);
+    ctx.fillText('  at async handleCheckoutRequest (src/routes/pay.ts:112:5)', 20, 260);
 
-    ctx.fillStyle = '#facc15';
-    ctx.font = '13px monospace';
-    ctx.fillText('Hint: Verify network isolation policy or check if replica port is mapped.', 20, 250);
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = '12px monospace';
+    ctx.fillText('Warning: Sensitive credentials detected in environment variables.', 20, 305);
 
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 14px monospace';
-    ctx.fillText('$ retry --force-fallback --verbose', 20, 295);
+    ctx.fillStyle = '#34d399';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText('$ retry --skip-cache --verbose', 20, 340);
 
     canvas.toBlob((blob) => {
       if (!blob) return reject(new Error('Failed to create blob'));

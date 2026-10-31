@@ -36,3 +36,17 @@ export function calculateTokenMetrics(
     compressionRatio,
   };
 }
+
+/**
+ * Smart Vision Router heuristic: determines whether local OCR Markdown is sufficiently reliable
+ * to inject into the user prompt or whether a fallback to cloud multimodal Vision LLM is warranted.
+ */
+export function determineRoutingRecommendation(
+  confidence: number,
+  wordCount: number
+): 'use_local_markdown' | 'fallback_to_vision_llm' {
+  if (confidence >= 55 && wordCount >= 5) {
+    return 'use_local_markdown';
+  }
+  return 'fallback_to_vision_llm';
+}

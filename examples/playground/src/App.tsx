@@ -5,8 +5,23 @@ import { generateReceiptFile, generateTerminalFile } from './sample-generators';
 import './styles.css';
 
 export function App() {
-  const { attachments, isProcessing, processFiles, getPromptContext, clearAttachments } =
-    useAttachmentOCR();
+  // Configurable options
+  const [redactPII, setRedactPII] = useState<boolean>(true);
+  const [autoInvertDarkMode, setAutoInvertDarkMode] = useState<boolean>(true);
+  const [preserveTables, setPreserveTables] = useState<boolean>(true);
+
+  const {
+    attachments,
+    isProcessing,
+    processFiles,
+    handlePaste,
+    getPromptContext,
+    clearAttachments,
+  } = useAttachmentOCR({
+    redactPII,
+    autoInvertDarkMode,
+    preserveTables,
+  });
 
   const [activeTab, setActiveTab] = useState<'markdown' | 'prompt' | 'tool'>('markdown');
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null);
@@ -19,10 +34,27 @@ export function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Global window paste support (Ctrl+V / Cmd+V)
+  useEffect(() => {
+    const onWindowPaste = (e: ClipboardEvent) => {
+      if (e.clipboardData) {
+        handlePaste({
+          clipboardData: e.clipboardData,
+          preventDefault: () => e.preventDefault(),
+        });
+      }
+    };
+    window.addEventListener('paste', onWindowPaste);
+    return () => window.removeEventListener('paste', onWindowPaste);
+  }, [handlePaste]);
+
   // Latest or currently selected attachment
   const currentAttachment = useMemo(() => {
     if (selectedAttachmentId) {
-      return attachments.find((a) => a.id === selectedAttachmentId) || attachments[attachments.length - 1];
+      return (
+        attachments.find((a) => a.id === selectedAttachmentId) ||
+        attachments[attachments.length - 1]
+      );
     }
     return attachments[attachments.length - 1];
   }, [attachments, selectedAttachmentId]);
@@ -54,6 +86,8 @@ export function App() {
         visionTokens: 765,
         textTokens: 0,
         savingsPercent: 0,
+        routing: null,
+        redactions: 0,
       };
     }
 
@@ -66,6 +100,8 @@ export function App() {
       visionTokens: metrics.estimatedVisionTokens,
       textTokens: metrics.extractedTextTokens,
       savingsPercent: metrics.compressionRatio,
+      routing: res.routingRecommendation,
+      redactions: res.redactionsApplied || 0,
     };
   }, [currentAttachment?.result, imageNaturalSize]);
 
@@ -76,8 +112,13 @@ export function App() {
         const item = attachments.find((a) => a.id === id || a.file.name === id);
         return item?.file;
       },
+      defaultOCROptions: {
+        redactPII,
+        autoInvertDarkMode,
+        preserveTables,
+      },
     });
-  }, [attachments]);
+  }, [attachments, redactPII, autoInvertDarkMode, preserveTables]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -155,6 +196,51 @@ export function App() {
             {telemetry.savingsPercent > 0 ? `-${telemetry.savingsPercent}%` : '0.0%'}
           </span>
         </div>
+        <div className="telemetry-item">
+          <span className="telemetry-label">Autonomous Routing</span>
+          <span className="telemetry-value">
+            {telemetry.routing === 'use_local_markdown' && (
+              <span className="telemetry-badge badge-green">LOCAL MARKDOWN</span>
+            )}
+            {telemetry.routing === 'fallback_to_vision_llm' && (
+              <span className="telemetry-badge badge-amber">VISION FALLBACK</span>
+            )}
+            {!telemetry.routing && <span style={{ color: '#64748b' }}>STANDBY</span>}
+            {telemetry.redactions > 0 && (
+              <span className="telemetry-badge badge-redacted">
+                {telemetry.redactions} REDACTED
+              </span>
+            )}
+          </span>
+        </div>
+      </section>
+
+      {/* Toolbar Toggles Strip */}
+      <section className="toolbar-strip">
+        <div className="toggles-group">
+          <button
+            className={`toggle-pill ${redactPII ? 'active green' : ''}`}
+            onClick={() => setRedactPII((prev) => !prev)}
+          >
+            <span>{redactPII ? '✓' : '○'}</span>
+            <span>Redact PII &amp; Secrets</span>
+          </button>
+          <button
+            className={`toggle-pill ${autoInvertDarkMode ? 'active' : ''}`}
+            onClick={() => setAutoInvertDarkMode((prev) => !prev)}
+          >
+            <span>{autoInvertDarkMode ? '✓' : '○'}</span>
+            <span>Auto-Invert Dark Mode</span>
+          </button>
+          <button
+            className={`toggle-pill ${preserveTables ? 'active' : ''}`}
+            onClick={() => setPreserveTables((prev) => !prev)}
+          >
+            <span>{preserveTables ? '✓' : '○'}</span>
+            <span>Preserve Tables</span>
+          </button>
+        </div>
+        <span className="paste-hint">Tip: Paste screenshot with Ctrl+V / Cmd+V anywhere</span>
       </section>
 
       {/* Workbench Two-Pane Grid */}
@@ -162,7 +248,7 @@ export function App() {
         {/* Left Pane: Input & Spatial Bounding Box Overlay */}
         <section className="pane pane-left">
           <div className="section-title">
-            <span>Attachment Input & Spatial Visualizer</span>
+            <span>Attachment Input &amp; Spatial Visualizer</span>
             {attachments.length > 0 && (
               <button className="btn btn-sm" onClick={clearAttachments}>
                 Clear
@@ -250,7 +336,7 @@ export function App() {
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <span className="dropzone-icon">📁</span>
-                  <span style={{ fontWeight: 600 }}>Drop an image or click "Load Sample"</span>
+                  <span style={{ fontWeight: 600 }}>Drop or Paste (Cmd+V) an Image</span>
                   <span className="dropzone-text">
                     Receipts, invoices, tables, code snippets, or logs
                   </span>
@@ -343,6 +429,8 @@ export function App() {
                       confidence: currentAttachment.result.confidence,
                       latencyMs: currentAttachment.result.latencyMs,
                       estimatedVisionTokensSaved: currentAttachment.result.estimatedVisionTokensSaved,
+                      routingRecommendation: currentAttachment.result.routingRecommendation,
+                      redactionsApplied: currentAttachment.result.redactionsApplied,
                     },
                     null,
                     2
