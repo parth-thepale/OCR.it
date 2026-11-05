@@ -1,0 +1,5 @@
+{
+  "buildCommand": "npm run build && npm --prefix examples/playground install && npm --prefix examples/playground run build",
+  "outputDirectory": "examples/playground/dist",
+  "framework": null
+}

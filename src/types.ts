@@ -17,6 +17,14 @@ export interface OCRLine {
   bbox: BoundingBox;
 }
 
+export interface ExtractedTable {
+  headers: string[];
+  rows: Record<string, string | number>[];
+  csv: string;
+  toon: string;
+  columnSums: Record<string, number>;
+}
+
 export interface OCRResult {
   rawText: string;
   markdown: string;
@@ -27,6 +35,8 @@ export interface OCRResult {
   attachmentName: string;
   routingRecommendation: 'use_local_markdown' | 'fallback_to_vision_llm';
   redactionsApplied: number;
+  tables: ExtractedTable[];
+  cacheHit: boolean;
 }
 
 export interface PIIOptions {
@@ -44,6 +54,8 @@ export interface OCROptions {
   contrastBoost?: boolean;
   redactPII?: boolean;
   piiOptions?: PIIOptions;
+  tableFormat?: 'gfm' | 'csv' | 'toon';
+  stripBoilerplate?: boolean;
   onProgress?: (progress: number, status: string) => void;
 }
 

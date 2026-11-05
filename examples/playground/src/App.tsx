@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useAttachmentOCR } from 'local-agent-ocr/react';
-import { calculateTokenMetrics, createOCRTool } from 'local-agent-ocr';
+import { calculateTokenMetrics, createOCRTool, ExtractedTable } from 'local-agent-ocr';
 import { generateReceiptFile, generateTerminalFile } from './sample-generators';
 import './styles.css';
 
@@ -23,7 +23,7 @@ export function App() {
     preserveTables,
   });
 
-  const [activeTab, setActiveTab] = useState<'markdown' | 'prompt' | 'tool'>('markdown');
+  const [activeTab, setActiveTab] = useState<'markdown' | 'prompt' | 'tool' | 'tables'>('markdown');
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [imageNaturalSize, setImageNaturalSize] = useState<{ width: number; height: number }>({
@@ -88,6 +88,7 @@ export function App() {
         savingsPercent: 0,
         routing: null,
         redactions: 0,
+        cacheHit: false,
       };
     }
 
@@ -102,6 +103,7 @@ export function App() {
       savingsPercent: metrics.compressionRatio,
       routing: res.routingRecommendation,
       redactions: res.redactionsApplied || 0,
+      cacheHit: res.cacheHit || false,
     };
   }, [currentAttachment?.result, imageNaturalSize]);
 
@@ -174,6 +176,9 @@ export function App() {
           <span className="telemetry-label">Latency</span>
           <span className="telemetry-value">
             {telemetry.latencyMs > 0 ? `${telemetry.latencyMs} ms` : '—'}
+            {telemetry.cacheHit && (
+              <span className="telemetry-badge badge-cache">CACHE HIT ⚡</span>
+            )}
           </span>
         </div>
         <div className="telemetry-item">
@@ -367,6 +372,12 @@ export function App() {
             >
               Callable Tool Schema
             </button>
+            <button
+              className={`tab-btn ${activeTab === 'tables' ? 'active' : ''}`}
+              onClick={() => setActiveTab('tables')}
+            >
+              Structured Tables &amp; JSON (Auto-Sum)
+            </button>
           </div>
 
           {activeTab === 'markdown' && (
@@ -431,6 +442,8 @@ export function App() {
                       estimatedVisionTokensSaved: currentAttachment.result.estimatedVisionTokensSaved,
                       routingRecommendation: currentAttachment.result.routingRecommendation,
                       redactionsApplied: currentAttachment.result.redactionsApplied,
+                      tables: currentAttachment.result.tables,
+                      cacheHit: currentAttachment.result.cacheHit,
                     },
                     null,
                     2
@@ -441,6 +454,101 @@ export function App() {
                   </span>
                 )}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'tables' && (
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 14 }}>
+              {currentAttachment?.result?.tables && currentAttachment.result.tables.length > 0 ? (
+                currentAttachment.result.tables.map((table: ExtractedTable, tIdx: number) => (
+                  <div
+                    key={tIdx}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                      backgroundColor: 'var(--bg-surface-elevated)',
+                      padding: 14,
+                      borderRadius: 6,
+                      border: '1px solid var(--border-color)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                      }}
+                    >
+                      <span className="section-title">
+                        Table #{tIdx + 1} ({table.rows.length} rows, {table.headers.length} columns)
+                      </span>
+                      {Object.keys(table.columnSums).length > 0 && (
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: '#94a3b8',
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                          >
+                            AUTO-SUM:
+                          </span>
+                          {Object.entries(table.columnSums).map(([col, sum]) => (
+                            <span
+                              key={col}
+                              className="telemetry-badge badge-green"
+                              style={{ fontFamily: 'var(--font-mono)' }}
+                            >
+                              Σ {col}:{' '}
+                              {typeof sum === 'number' &&
+                              col.toLowerCase().includes('price')
+                                ? `$${(sum as number).toFixed(2)}`
+                                : String(sum)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <span className="section-title" style={{ fontSize: 11, color: '#38bdf8' }}>
+                      Typed JSON Rows (Deterministic LLM Arithmetic)
+                    </span>
+                    <div className="code-container" style={{ maxHeight: 180 }}>
+                      {JSON.stringify(table.rows, null, 2)}
+                    </div>
+
+                    <span className="section-title" style={{ fontSize: 11, color: '#a78bfa' }}>
+                      Compact TOON Representation (Token-Optimized Object Notation)
+                    </span>
+                    <div className="code-container" style={{ maxHeight: 90, wordBreak: 'break-all' }}>
+                      {table.toon}
+                    </div>
+
+                    <span className="section-title" style={{ fontSize: 11, color: '#94a3b8' }}>
+                      Pre-computed Column Sums Record
+                    </span>
+                    <div className="code-container" style={{ maxHeight: 90 }}>
+                      {JSON.stringify(table.columnSums, null, 2)}
+                    </div>
+
+                    <span className="section-title" style={{ fontSize: 11, color: '#64748b' }}>
+                      Raw CSV Export
+                    </span>
+                    <div className="code-container" style={{ maxHeight: 110 }}>
+                      {table.csv}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="code-container">
+                  <span style={{ color: '#64748b' }}>
+                    /* No tabular gutters detected in attachment. Load Sample Receipt to inspect extracted tables, auto-sums, and TOON format. */
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </section>

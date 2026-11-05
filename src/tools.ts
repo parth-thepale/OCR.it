@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { OCRInput, OCROptions } from './types';
+import { OCRInput, OCROptions, ExtractedTable } from './types';
 import { extractAttachmentOCR, formatForPrompt } from './ocr-client';
 
 export * from './types';
@@ -40,6 +40,13 @@ export const extractAttachmentTextParamsSchema = z.object({
     .optional()
     .default(true)
     .describe('Automatically invert colors for dark-mode IDE/terminal screenshots'),
+  tableFormat: z
+    .enum(['gfm', 'toon', 'csv'])
+    .optional()
+    .default('gfm')
+    .describe(
+      'Format for extracted tables: standard Markdown (gfm), compact TOON (@table[]{}), or raw CSV'
+    ),
 });
 
 export type ExtractAttachmentTextParams = z.infer<typeof extractAttachmentTextParamsSchema>;
@@ -66,6 +73,8 @@ export interface OCRToolExecutionResult {
   routingRecommendation: 'use_local_markdown' | 'fallback_to_vision_llm';
   redactionsApplied: number;
   promptXml: string;
+  tables: ExtractedTable[];
+  cacheHit: boolean;
 }
 
 /**
@@ -110,6 +119,13 @@ export function createOCRTool(options: CreateOCRToolOptions) {
           'Automatically invert colors for dark-mode IDE/terminal screenshots',
         default: true,
       },
+      tableFormat: {
+        type: 'string',
+        enum: ['gfm', 'toon', 'csv'],
+        description:
+          'Format for extracted tables: standard Markdown (gfm), compact TOON (@table[]{}), or raw CSV',
+        default: 'gfm',
+      },
     },
     required: ['attachmentId'],
     additionalProperties: false,
@@ -140,6 +156,7 @@ export function createOCRTool(options: CreateOCRToolOptions) {
         confidenceThreshold: parsedArgs.confidenceThreshold,
         redactPII: parsedArgs.redactPII,
         autoInvertDarkMode: parsedArgs.autoInvertDarkMode,
+        tableFormat: parsedArgs.tableFormat,
       };
 
       const result = await extractAttachmentOCR(input, ocrOptions);
@@ -154,6 +171,8 @@ export function createOCRTool(options: CreateOCRToolOptions) {
         routingRecommendation: result.routingRecommendation,
         redactionsApplied: result.redactionsApplied,
         promptXml: formatForPrompt(result),
+        tables: result.tables,
+        cacheHit: result.cacheHit,
       };
     },
   };

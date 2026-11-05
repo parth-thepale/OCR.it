@@ -1,12 +1,24 @@
 import { createWorker } from 'tesseract.js';
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import { OCRLine, OCRWord, OCRResult, OCROptions, OCRInput } from './types';
-import { reconstructMarkdown } from './layout-to-md';
+import { reconstructMarkdown, reconstructLayout } from './layout-to-md';
 import { calculateTokenMetrics, determineRoutingRecommendation } from './token-metrics';
-import { preprocessImage } from './preprocess';
+import { preprocessImage, computeInputHash } from './preprocess';
 import { redactSensitiveData } from './pii-redactor';
 
 export type { OCRInput };
+
+function serializeOptions(options?: OCROptions): string {
+  if (!options) return '{}';
+  const filtered: Record<string, any> = {};
+  for (const key of Object.keys(options).sort()) {
+    const val = (options as any)[key];
+    if (typeof val !== 'function') {
+      filtered[key] = val;
+    }
+  }
+  return JSON.stringify(filtered);
+}
 
 /**
  * Maps Tesseract.js hierarchical blocks -> paragraphs -> lines -> words into OCRLine[].
@@ -99,12 +111,18 @@ export class LocalOCRClient {
   private currentLanguage: string = 'eng';
   private defaultOptions?: OCROptions;
   private currentProgressCallback?: (progress: number, status: string) => void;
+  private cache = new Map<string, OCRResult>();
+  private readonly maxCacheSize = 50;
 
   constructor(defaultOptions?: OCROptions) {
     this.defaultOptions = defaultOptions;
     if (defaultOptions?.language) {
       this.currentLanguage = defaultOptions.language;
     }
+  }
+
+  clearCache(): void {
+    this.cache.clear();
   }
 
   private async getWorker(
@@ -158,7 +176,23 @@ export class LocalOCRClient {
       ...options,
     };
 
-    // 1. Preprocess image (auto-inversion for dark-mode screenshots, contrast boost)
+    // Fast perceptual hash LRU cache lookup (<1ms on hit)
+    const inputHash = await computeInputHash(input);
+    const cacheKey = `${inputHash}::${serializeOptions(effectiveOptions)}`;
+
+    if (this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey)!;
+      this.cache.delete(cacheKey);
+      this.cache.set(cacheKey, cached);
+      const latencyMs = Math.round(performance.now() - startTime);
+      return {
+        ...cached,
+        cacheHit: true,
+        latencyMs,
+      };
+    }
+
+    // 1. Preprocess image (auto-inversion for dark-mode screenshots, smart scaling, contrast boost)
     let processedInput = input;
     if (effectiveOptions.autoInvertDarkMode !== false || effectiveOptions.contrastBoost) {
       processedInput = await preprocessImage(input, {
@@ -178,10 +212,12 @@ export class LocalOCRClient {
     );
 
     const lines = extractLinesFromPage(response?.data);
-    let markdown = reconstructMarkdown(lines, effectiveOptions);
+    const layout = reconstructLayout(lines, effectiveOptions);
+    let markdown = layout.markdown;
+    let tables = layout.tables;
     let rawText = response?.data?.text || '';
 
-    // 2. Client-side PII and Secret Redaction
+    // 2. Client-side PII and Secret Redaction across Markdown, text, and tables
     let redactionsApplied = 0;
     if (effectiveOptions.redactPII !== false) {
       const piiMarkdown = redactSensitiveData(markdown, effectiveOptions.piiOptions);
@@ -189,6 +225,24 @@ export class LocalOCRClient {
       const piiRaw = redactSensitiveData(rawText, effectiveOptions.piiOptions);
       rawText = piiRaw.sanitizedText;
       redactionsApplied = piiMarkdown.redactionCount;
+
+      if (tables.length > 0) {
+        tables = tables.map((t) => ({
+          ...t,
+          csv: redactSensitiveData(t.csv, effectiveOptions.piiOptions).sanitizedText,
+          toon: redactSensitiveData(t.toon, effectiveOptions.piiOptions).sanitizedText,
+          rows: t.rows.map((row) => {
+            const sanitizedRow: Record<string, string | number> = {};
+            for (const [k, v] of Object.entries(row)) {
+              sanitizedRow[k] =
+                typeof v === 'string'
+                  ? redactSensitiveData(v, effectiveOptions.piiOptions).sanitizedText
+                  : v;
+            }
+            return sanitizedRow;
+          }),
+        }));
+      }
     }
 
     const metrics = calculateTokenMetrics(markdown);
@@ -215,7 +269,7 @@ export class LocalOCRClient {
     const totalWords = lines.reduce((acc, l) => acc + (l.words?.length || 0), 0);
     const routingRecommendation = determineRoutingRecommendation(confidence, totalWords);
 
-    return {
+    const result: OCRResult = {
       rawText,
       markdown,
       lines,
@@ -225,7 +279,18 @@ export class LocalOCRClient {
       attachmentName,
       routingRecommendation,
       redactionsApplied,
+      tables,
+      cacheHit: false,
     };
+
+    // Store in LRU cache
+    if (this.cache.size >= this.maxCacheSize) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey) this.cache.delete(oldestKey);
+    }
+    this.cache.set(cacheKey, result);
+
+    return result;
   }
 
   async terminate(): Promise<void> {

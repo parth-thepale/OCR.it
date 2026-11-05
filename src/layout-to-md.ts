@@ -1,8 +1,60 @@
-import { OCRLine, BoundingBox } from './types';
+import { OCRLine, BoundingBox, ExtractedTable } from './types';
 
 export interface LayoutToMarkdownOptions {
   preserveTables?: boolean;
   confidenceThreshold?: number;
+  tableFormat?: 'gfm' | 'csv' | 'toon';
+  stripBoilerplate?: boolean;
+}
+
+export interface ReconstructedLayoutResult {
+  markdown: string;
+  tables: ExtractedTable[];
+}
+
+const STATUS_NOISE_PATTERNS = [
+  /^\d{1,3}%$/,
+  /^\d{1,2}:\d{2}(?::\d{2})?(\s*(am|pm|AM|PM))?$/,
+  /^(am|pm)$/i,
+  /^(file|edit|view|window|help|history|bookmarks|tabs?)$/i,
+  /^(wifi|lte|5g|4g|bluetooth)$/i,
+];
+
+function isBoilerplateNoise(text: string): boolean {
+  const trimmed = text.trim();
+  return STATUS_NOISE_PATTERNS.some((p) => p.test(trimmed));
+}
+
+function parseNumericValue(text: string): { isNumeric: boolean; value: number } {
+  const trimmed = text.trim();
+  if (!trimmed) return { isNumeric: false, value: 0 };
+
+  // Strip currency symbols and handle accounting parens
+  let cleaned = trimmed.replace(/[$€£¥₹]/g, '').trim();
+  if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
+    cleaned = '-' + cleaned.slice(1, -1).trim();
+  }
+  cleaned = cleaned.replace(/,/g, '');
+
+  if (/^-?\d+(?:\.\d+)?$/.test(cleaned)) {
+    const num = Number(cleaned);
+    if (!isNaN(num) && isFinite(num)) {
+      return { isNumeric: true, value: num };
+    }
+  }
+  return { isNumeric: false, value: 0 };
+}
+
+function escapeCsvCell(val: string | number): string {
+  const str = String(val ?? '');
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function cleanToonCell(val: string | number): string {
+  return String(val ?? '').replace(/[{}]/g, '').trim();
 }
 
 interface InternalWord {
@@ -34,16 +86,18 @@ function median(values: number[]): number {
 }
 
 /**
- * Deterministically reconstructs spatial OCR layout bounding boxes into clean, LLM-ready GFM Markdown.
+ * Deterministically reconstructs spatial OCR layout bounding boxes into clean, LLM-ready GFM Markdown
+ * alongside structured tables, JSON rows, and compact serialization formats.
  */
-export function reconstructMarkdown(
+export function reconstructLayout(
   lines: OCRLine[],
   options?: LayoutToMarkdownOptions
-): string {
-  if (!lines || lines.length === 0) return '';
+): ReconstructedLayoutResult {
+  if (!lines || lines.length === 0) return { markdown: '', tables: [] };
 
   const threshold = options?.confidenceThreshold ?? 30;
   const preserveTables = options?.preserveTables !== false;
+  const tableFormat = options?.tableFormat ?? 'gfm';
 
   const lineHeights: number[] = [];
   const rawWords: InternalWord[] = [];
@@ -80,9 +134,30 @@ export function reconstructMarkdown(
     }
   }
 
-  if (rawWords.length === 0) return '';
+  if (rawWords.length === 0) return { markdown: '', tables: [] };
 
-  const wordHeights = rawWords.map((w) => w.bbox.y1 - w.bbox.y0).filter((h) => h > 0);
+  // Edge Boilerplate Filter: strip status bar noise in top/bottom 3% vertical margins
+  let words = rawWords;
+  if (options?.stripBoilerplate !== false && rawWords.length > 0) {
+    const allY0 = rawWords.map((w) => w.bbox.y0);
+    const allY1 = rawWords.map((w) => w.bbox.y1);
+    const minY = Math.min(...allY0);
+    const maxY = Math.max(...allY1);
+    const totalHeight = maxY - minY;
+
+    if (totalHeight >= 100) {
+      const topMargin = minY + totalHeight * 0.03;
+      const bottomMargin = maxY - totalHeight * 0.03;
+      words = rawWords.filter((w) => {
+        const isAtMargin = w.yCenter <= topMargin || w.yCenter >= bottomMargin;
+        return !(isAtMargin && isBoilerplateNoise(w.text));
+      });
+    }
+  }
+
+  if (words.length === 0) return { markdown: '', tables: [] };
+
+  const wordHeights = words.map((w) => w.bbox.y1 - w.bbox.y0).filter((h) => h > 0);
   const medianLineHeight =
     wordHeights.length > 0
       ? median(wordHeights)
@@ -91,13 +166,13 @@ export function reconstructMarkdown(
         : 16;
 
   // Median character width
-  const charWidths = rawWords
+  const charWidths = words
     .filter((w) => w.text.length > 0 && w.bbox.x1 > w.bbox.x0)
     .map((w) => (w.bbox.x1 - w.bbox.x0) / w.text.length);
   const medianCharWidth = charWidths.length > 0 ? median(charWidths) : medianLineHeight * 0.5;
 
   // Sort words top-to-bottom by yCenter, then left-to-right by bbox.x0
-  rawWords.sort((a, b) => {
+  words.sort((a, b) => {
     if (Math.abs(a.yCenter - b.yCenter) > 0.001) {
       return a.yCenter - b.yCenter;
     }
@@ -108,15 +183,15 @@ export function reconstructMarkdown(
   const rowThreshold = 0.6 * Math.max(1, medianLineHeight);
   const rows: { words: InternalWord[]; yCenter: number; y0: number; y1: number }[] = [];
 
-  for (const word of rawWords) {
+  for (const word of words) {
     let bestRowIndex = -1;
     let minDiff = Infinity;
 
-    for (let i = 0; i < rows.length; i++) {
-      const diff = Math.abs(word.yCenter - rows[i].yCenter);
+    for (let idx = 0; idx < rows.length; idx++) {
+      const diff = Math.abs(word.yCenter - rows[idx].yCenter);
       if (diff <= rowThreshold && diff < minDiff) {
         minDiff = diff;
-        bestRowIndex = i;
+        bestRowIndex = idx;
       }
     }
 
@@ -150,8 +225,8 @@ export function reconstructMarkdown(
     const clusters: ColumnCluster[] = [];
     let currentClusterWords: InternalWord[] = [];
 
-    for (let i = 0; i < r.words.length; i++) {
-      const currentWord = r.words[i];
+    for (let idx = 0; idx < r.words.length; idx++) {
+      const currentWord = r.words[idx];
       if (currentClusterWords.length === 0) {
         currentClusterWords.push(currentWord);
       } else {
@@ -210,6 +285,7 @@ export function reconstructMarkdown(
   }
 
   const blocks: OutputBlock[] = [];
+  const extractedTables: ExtractedTable[] = [];
   let i = 0;
 
   while (i < processedRows.length) {
@@ -225,27 +301,131 @@ export function reconstructMarkdown(
       }
 
       if (tableRows.length >= 2) {
-        const maxCols = Math.max(...tableRows.map((tr) => tr.clusters.length));
-        const tableLines: string[] = [];
+        const headerClusters = tableRows[0].clusters;
+        const rawHeaders = headerClusters.map((c, idx) => c.text.trim() || `Col_${idx + 1}`);
 
-        // Header row
-        const headerCells = tableRows[0].clusters.map((c) => c.text.replace(/\|/g, '\\|'));
-        while (headerCells.length < maxCols) headerCells.push('');
-        tableLines.push(`| ${headerCells.join(' | ')} |`);
+        // Ensure unique header column keys for JSON record mapping
+        const seenHeaders = new Set<string>();
+        const headers = rawHeaders.map((h, idx) => {
+          let name = h || `Col_${idx + 1}`;
+          let uniqueName = name;
+          let counter = 2;
+          while (seenHeaders.has(uniqueName)) {
+            uniqueName = `${name}_${counter++}`;
+          }
+          seenHeaders.add(uniqueName);
+          return uniqueName;
+        });
 
-        // Header separator
-        const separatorCells = new Array(maxCols).fill('---');
-        tableLines.push(`| ${separatorCells.join(' | ')} |`);
+        const headerCenters = headerClusters.map((c) => (c.bbox.x0 + c.bbox.x1) / 2);
+        const parsedRows: Record<string, string | number>[] = [];
+        const allBodyRowCells: string[][] = [];
 
-        // Body rows
         for (let trIdx = 1; trIdx < tableRows.length; trIdx++) {
-          const bodyCells = tableRows[trIdx].clusters.map((c) => c.text.replace(/\|/g, '\\|'));
-          while (bodyCells.length < maxCols) bodyCells.push('');
-          tableLines.push(`| ${bodyCells.join(' | ')} |`);
+          const tr = tableRows[trIdx];
+          let rowCells: string[];
+
+          if (tr.clusters.length === headers.length) {
+            rowCells = tr.clusters.map((c) => c.text.trim());
+          } else {
+            // Align by vertical gutter center
+            rowCells = new Array(headers.length).fill('');
+            for (const cluster of tr.clusters) {
+              const clusterCenter = (cluster.bbox.x0 + cluster.bbox.x1) / 2;
+              let bestCol = 0;
+              let minDist = Infinity;
+              for (let cIdx = 0; cIdx < headerCenters.length; cIdx++) {
+                const dist = Math.abs(clusterCenter - headerCenters[cIdx]);
+                if (dist < minDist) {
+                  minDist = dist;
+                  bestCol = cIdx;
+                }
+              }
+              rowCells[bestCol] = rowCells[bestCol]
+                ? `${rowCells[bestCol]} ${cluster.text.trim()}`
+                : cluster.text.trim();
+            }
+          }
+
+          allBodyRowCells.push(rowCells);
+
+          const rowRecord: Record<string, string | number> = {};
+          for (let colIdx = 0; colIdx < headers.length; colIdx++) {
+            const cellText = rowCells[colIdx] ?? '';
+            const { isNumeric, value } = parseNumericValue(cellText);
+            rowRecord[headers[colIdx]] = isNumeric ? value : cellText;
+          }
+          parsedRows.push(rowRecord);
+        }
+
+        // Deterministic column sum computation for numeric columns
+        const columnSums: Record<string, number> = {};
+        for (const h of headers) {
+          let sum = 0;
+          let numericCount = 0;
+          let hasNonNumeric = false;
+          for (const pr of parsedRows) {
+            const val = pr[h];
+            if (typeof val === 'number') {
+              numericCount++;
+              sum += val;
+            } else if (typeof val === 'string' && val.trim() !== '') {
+              hasNonNumeric = true;
+            }
+          }
+          if (numericCount > 0 && !hasNonNumeric) {
+            columnSums[h] = Math.round(sum * 10000) / 10000;
+          }
+        }
+
+        // CSV serialization
+        const csvLines: string[] = [headers.map(escapeCsvCell).join(',')];
+        for (const bCells of allBodyRowCells) {
+          csvLines.push(bCells.map(escapeCsvCell).join(','));
+        }
+        const csv = csvLines.join('\n');
+
+        // TOON compact serialization: @table[Col1,Col2]{val1,val2}{val3,val4}
+        const toonBody = allBodyRowCells
+          .map((bCells) => `{${bCells.map(cleanToonCell).join(',')}}`)
+          .join('');
+        const toon = `@table[${headers.map(cleanToonCell).join(',')}]${toonBody}`;
+
+        extractedTables.push({
+          headers,
+          rows: parsedRows,
+          csv,
+          toon,
+          columnSums,
+        });
+
+        // Determine output block string according to requested tableFormat
+        let tableBlockText: string;
+        if (tableFormat === 'toon') {
+          tableBlockText = toon;
+        } else if (tableFormat === 'csv') {
+          tableBlockText = csv;
+        } else {
+          // Standard GFM table
+          const maxCols = Math.max(...tableRows.map((tr) => tr.clusters.length), headers.length);
+          const tableLines: string[] = [];
+          const headerCells = headers.map((h) => h.replace(/\|/g, '\\|'));
+          while (headerCells.length < maxCols) headerCells.push('');
+          tableLines.push(`| ${headerCells.join(' | ')} |`);
+
+          const separatorCells = new Array(maxCols).fill('---');
+          tableLines.push(`| ${separatorCells.join(' | ')} |`);
+
+          for (const bCells of allBodyRowCells) {
+            const formattedCells = bCells.map((c) => c.replace(/\|/g, '\\|'));
+            while (formattedCells.length < maxCols) formattedCells.push('');
+            tableLines.push(`| ${formattedCells.join(' | ')} |`);
+          }
+          tableBlockText = tableLines.join('\n');
         }
 
         blocks.push({
-          text: tableLines.join('\n'),
+          text: tableBlockText,
           y0: tableRows[0].y0,
           y1: tableRows[tableRows.length - 1].y1,
           isTable: true,
@@ -282,7 +462,7 @@ export function reconstructMarkdown(
     i++;
   }
 
-  if (blocks.length === 0) return '';
+  if (blocks.length === 0) return { markdown: '', tables: extractedTables };
 
   let markdown = blocks[0].text;
   for (let k = 1; k < blocks.length; k++) {
@@ -298,5 +478,18 @@ export function reconstructMarkdown(
     }
   }
 
-  return markdown.trim();
+  return {
+    markdown: markdown.trim(),
+    tables: extractedTables,
+  };
+}
+
+/**
+ * Convenience helper returning Markdown string directly.
+ */
+export function reconstructMarkdown(
+  lines: OCRLine[],
+  options?: LayoutToMarkdownOptions
+): string {
+  return reconstructLayout(lines, options).markdown;
 }
